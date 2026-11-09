@@ -1,4 +1,4 @@
-# My contributions to this forked software is 100% cuck-coded, and thus will never reach a full 1.0 release because I have no idea how to code.
+# My contributions to this forked software are 100% cuck-coded, and thus will never reach a full 1.0 release because I have no idea how to code.
 # You may treat this fork as a base from which a real coder can come in and refine this functionality.
 
 # LocaLeShop
