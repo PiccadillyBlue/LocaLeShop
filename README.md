@@ -1,21 +1,24 @@
-# NUSspli
-Install content directly from the Nintendo Update Servers to your Wii U.
+# My contributions to this forked software is 100% cuck-coded, and thus will never reach a full 1.0 release because I have no idea how to code.
+# You may treat this fork as a base from which a real coder can come in and refine this functionality.
+
+# LocaLeShop
+Install content directly from the Your local server to your Wii U.
 
 [![build](https://github.com/V10lator/NUSspli/actions/workflows/master.yml/badge.svg)](https://github.com/V10lator/NUSspli/actions/workflows/master.yml)
 
 # Features
-- Download titles from Nintendos servers (NUS).
+- Download titles from local Samba servers.
 - Install the downloaded titles to external or internal storage.
 - Includes a keygen!
 - Create fake tickets at will or if not found.
 - Shows the download speed.
 - On screen keyboard.
-- Can download anything available on the NUS.
+- Can download anything available on your NAS.
 - Custom folder names for downloaded titles.
 - Auto update.
 
 # Install
-To install the app, download and unzip the contents of the [latest release](https://github.com/V10lator/NUSspli/releases) and depending on how you will run the app, follow the next steps:
+To install the app, download and unzip the contents of the [latest release](https://github.com/TMStage/LocaLeShop/releases) and depending on how you will run the app, follow the next steps:
 
 ### Aroma
 - Move NUSspli.wuhb to (SD:/wiiu/apps/).
