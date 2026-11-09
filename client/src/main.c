@@ -37,7 +37,7 @@
 /* Portlibs headers */
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
-#include <cjson/cJSON.h>
+#include "cJSON.h"
 #include <curl/curl.h>
 
 /* --------------------------------------------------------------------------
@@ -1430,7 +1430,6 @@ static bool init_application(AppContext *ctx) {
     WHBLogCafeInit();
     WHBLogUdpInit();
     VPADInit();
-    socket_lib_init();
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
         WHBLogPrintf("Failed to initialize libcurl");
