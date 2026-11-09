@@ -4,6 +4,7 @@ So just, y'know...keep that in mind. I'm not gonna sit here and lie to you like 
 Goes without saying, but this software isn't ready yet. It may never be ready. Go use NUSspli instead for now.
 
 #LocaLeShop
+
 Yeah so basically the idea is that you can host your own extracted WUXes on your server and have your Wii U console directly pull from there so you don't have to deal with file management yourself, it just works like an eShop.
 
 # Features
