@@ -63,7 +63,15 @@ static inline MCPError LocaLeShop_MCP_InstallSetTarget(int mcp_fd, int target) {
 static inline MCPError LocaLeShop_MCP_InstallTitleAsync(int mcp_fd, const char *path) {
     static MCPInstallTitleInfo s_installInfo;
     memset(&s_installInfo, 0, sizeof(s_installInfo));
-    return MCP_InstallTitleAsync(mcp_fd, path, &s_installInfo);
+
+    char mcp_path[512];
+    if (strncmp(path, "fs:/vol/external01", 18) == 0) {
+        snprintf(mcp_path, sizeof(mcp_path), "/vol/storage_sdcard%s", path + 18);
+    } else {
+        snprintf(mcp_path, sizeof(mcp_path), "%s", path);
+    }
+
+    return MCP_InstallTitleAsync(mcp_fd, mcp_path, &s_installInfo);
 }
 
 #define MCP_InstallSetTarget(fd, target) LocaLeShop_MCP_InstallSetTarget((fd), (target))
@@ -77,11 +85,11 @@ static inline MCPError LocaLeShop_MCP_InstallTitleAsync(int mcp_fd, const char *
 
 #define DEFAULT_SERVER_IP       "192.168.1.100"
 #define DEFAULT_SERVER_PORT     8000
-#define CONFIG_FILE_PATH        "/vol/storage_sdcard/wiiu/apps/LocaLeShop/config.json"
-#define SD_STAGE_BASE_DIR       "/vol/storage_sdcard/install"
+#define CONFIG_FILE_PATH        "fs:/vol/external01/wiiu/apps/LocaLeShop/config.json"
+#define SD_STAGE_BASE_DIR       "fs:/vol/external01/install"
 
 #define SYSTEM_FONT_PRIMARY     "/vol/content/font/CafeStd.ttf"
-#define SYSTEM_FONT_FALLBACK_1  "/vol/storage_sdcard/wiiu/apps/LocaLeShop/font.ttf"
+#define SYSTEM_FONT_FALLBACK_1  "fs:/vol/external01/wiiu/apps/LocaLeShop/font.ttf"
 #define SYSTEM_FONT_FALLBACK_2  "/vol/storage_mlc01/sys/title/0005001b/10042400/content/CafeStd.ttf"
 
 #define MAX_TITLES              512
