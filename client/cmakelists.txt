@@ -1,0 +1,103 @@
+cmake_minimum_required(VERSION 3.16)
+
+# Ensure DEVKITPRO and WUT_ROOT are resolved before project() when using wut toolchain
+if(NOT DEFINED ENV{DEVKITPRO})
+    message(FATAL_ERROR "Please set DEVKITPRO in your environment (export DEVKITPRO=/opt/devkitpro)")
+endif()
+
+set(DEVKITPRO $ENV{DEVKITPRO})
+
+# Load the official Wii U Toolchain (wut) CMake file if not already specified via -DCMAKE_TOOLCHAIN_FILE
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if(EXISTS "${DEVKITPRO}/wut/share/wut.toolchain.cmake")
+        set(CMAKE_TOOLCHAIN_FILE "${DEVKITPRO}/wut/share/wut.toolchain.cmake" CACHE FILEPATH "WUT toolchain file")
+    endif()
+endif()
+
+project(LocaLeShopClient VERSION 1.0.0 LANGUAGES C)
+
+include("${DEVKITPRO}/wut/share/wut.cmake" OPTIONAL)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# Include devkitPro portlibs (ppc) headers and library search paths
+set(PORTLIBS_PPC "${DEVKITPRO}/portlibs/ppc")
+set(PORTLIBS_WIIU "${DEVKITPRO}/portlibs/wiiu")
+
+include_directories(
+    "${PORTLIBS_WIIU}/include"
+    "${PORTLIBS_PPC}/include"
+    "${PORTLIBS_PPC}/include/SDL2"
+    "${PORTLIBS_PPC}/include/cjson"
+    "${DEVKITPRO}/wut/include"
+)
+
+link_directories(
+    "${PORTLIBS_WIIU}/lib"
+    "${PORTLIBS_PPC}/lib"
+    "${DEVKITPRO}/wut/lib"
+)
+
+add_executable(LocaLeShop
+    src/main.c
+)
+
+target_compile_options(LocaLeShop PRIVATE
+    -Wall
+    -Wextra
+    -O2
+    -ffunction-sections
+    -fdata-sections
+)
+
+# Link order matters for static PowerPC portlibs on devkitPPC / wut:
+# High-level libraries first, followed by TLS/crypto, compression, and wut core libraries.
+target_link_libraries(LocaLeShop PRIVATE
+    SDL2_ttf
+    SDL2
+    freetype
+    png16
+    bz2
+    harfbuzz
+    curl
+    mbedtls
+    mbedx509
+    mbedcrypto
+    z
+    cjson
+    vpad
+    padscore
+    sndcore2
+    coreinit
+    whb
+    nsysnet
+    sysapp
+    gx2
+    proc_ui
+    m
+)
+
+# Build the final .rpx executable and package the .wuhb bundle for Aroma / Tiramisu
+wut_create_rpx(LocaLeShop)
+
+set(WUHB_ARGS
+    NAME "LocaLeShop"
+    SHORTNAME "LocaLeShop"
+    AUTHOR "LocaLeShop Contributors"
+)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/content")
+    list(APPEND WUHB_ARGS CONTENT "${CMAKE_CURRENT_SOURCE_DIR}/assets/content")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png")
+    list(APPEND WUHB_ARGS ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/tv_splash.png")
+    list(APPEND WUHB_ARGS TV_SPLASH "${CMAKE_CURRENT_SOURCE_DIR}/assets/tv_splash.png")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/drc_splash.png")
+    list(APPEND WUHB_ARGS DRC_SPLASH "${CMAKE_CURRENT_SOURCE_DIR}/assets/drc_splash.png")
+endif()
+
+wut_create_wuhb(LocaLeShop ${WUHB_ARGS})
