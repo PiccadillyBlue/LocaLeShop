@@ -1,3 +1,4 @@
+#include <sys/statvfs.h>
 /**
  * LocaLeShop Wii U Homebrew Client (.wuhb)
  * ----------------------------------------
@@ -54,8 +55,8 @@
  */
 static inline MCPError LocaLeShop_MCP_InstallSetTarget(int mcp_fd, int target) {
     MCPError err = MCP_InstallSetTargetDevice(mcp_fd, (MCPInstallTarget)target);
-    if (err >= 0 && target == MCP_INSTALL_TARGET_USB) {
-        MCP_InstallSetTargetUsb(mcp_fd, 1);
+    if (err >= 0) {
+        MCP_InstallSetTargetUsb(mcp_fd, (target == MCP_INSTALL_TARGET_USB) ? 1 : 0);
     }
     return err;
 }
@@ -120,7 +121,21 @@ typedef struct {
 } TitleMetadata;
 
 typedef enum {
+    INSTALL_TARGET_USB = 0,
+    INSTALL_TARGET_NAND = 1,
+    INSTALL_TARGET_SD = 2,
+    INSTALL_TARGET_COUNT = 3
+} InstallTargetOption;
+
+typedef struct {
+    bool available;
+    uint64_t free_bytes;
+    uint64_t total_bytes;
+} StorageStats;
+
+typedef enum {
     APP_STATE_BROWSING = 0,
+    APP_STATE_SELECT_TARGET,
     APP_STATE_DOWNLOADING,
     APP_STATE_INSTALLING,
     APP_STATE_COMPLETED,
@@ -162,6 +177,11 @@ typedef struct {
     /* Operational state machine */
     AppState      state;
     char          status_message[256];
+    InstallTargetOption target_option;
+    StorageStats        storage_usb;
+    StorageStats        storage_nand;
+    StorageStats        storage_sd;
+    char                modal_error[128];
 
     /* Non-blocking libcurl download pipeline */
     CURLM             *curl_multi;
@@ -622,6 +642,14 @@ static void cleanup_active_download_handles(AppContext *ctx) {
     }
 }
 
+static int curl_sockopt_cb(void *clientp, curl_socket_t curlfd, curlsocktype purpose) {
+    (void)clientp;
+    (void)purpose;
+    int rcvbuf = 524288; /* 512 KiB TCP receive window */
+    setsockopt(curlfd, SOL_SOCKET, SO_RCVBUF, (const char *)&rcvbuf, sizeof(rcvbuf));
+    return CURL_SOCKOPT_OK;
+}
+
 static bool start_next_file_download(AppContext *ctx) {
     cleanup_active_download_handles(ctx);
 
@@ -659,6 +687,10 @@ static bool start_next_file_download(AppContext *ctx) {
 
     memset(&ctx->stream_ctx, 0, sizeof(ctx->stream_ctx));
     ctx->stream_ctx.fp = fopen(ctx->dl_current_filepath, "wb");
+    if (ctx->stream_ctx.fp) {
+        static char file_io_buf[524288];
+        setvbuf(ctx->stream_ctx.fp, file_io_buf, _IOFBF, sizeof(file_io_buf));
+    }
     if (!ctx->stream_ctx.fp) {
         snprintf(
             ctx->status_message,
@@ -691,7 +723,9 @@ static bool start_next_file_download(AppContext *ctx) {
     curl_easy_setopt(ctx->curl_easy, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(ctx->curl_easy, CURLOPT_XFERINFOFUNCTION, curl_xferinfo_cb);
     curl_easy_setopt(ctx->curl_easy, CURLOPT_XFERINFODATA, ctx);
-    curl_easy_setopt(ctx->curl_easy, CURLOPT_BUFFERSIZE, 65536L);
+    curl_easy_setopt(ctx->curl_easy, CURLOPT_BUFFERSIZE, 524288L);
+        curl_easy_setopt(ctx->curl_easy, CURLOPT_TCP_NODELAY, 1L);
+    curl_easy_setopt(ctx->curl_easy, CURLOPT_SOCKOPTFUNCTION, curl_sockopt_cb);
     curl_easy_setopt(ctx->curl_easy, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(ctx->curl_easy, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(ctx->curl_easy, CURLOPT_LOW_SPEED_TIME, 30L);
@@ -756,6 +790,87 @@ static void begin_title_download(AppContext *ctx, int title_idx) {
  * 2. MCP Installation Pipeline (Async & Non-Blocking)
  * -------------------------------------------------------------------------- */
 
+
+static void refresh_storage_stats(AppContext *ctx) {
+    memset(&ctx->storage_sd, 0, sizeof(ctx->storage_sd));
+    memset(&ctx->storage_usb, 0, sizeof(ctx->storage_usb));
+    memset(&ctx->storage_nand, 0, sizeof(ctx->storage_nand));
+
+    /* Query SD Card capacity */
+    struct statvfs st;
+    if (statvfs("fs:/vol/external01", &st) == 0 && st.f_blocks > 0) {
+        uint64_t bsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+        ctx->storage_sd.total_bytes = (uint64_t)st.f_blocks * bsize;
+        ctx->storage_sd.free_bytes = (uint64_t)st.f_bavail * bsize;
+        ctx->storage_sd.available = true;
+    } else {
+        ctx->storage_sd.available = true;
+    }
+
+    /* Query USB and NAND availability via MCP target testing */
+    int mcp_fd = MCP_Open();
+    if (mcp_fd >= 0) {
+        MCPError err_usb = MCP_InstallSetTarget(mcp_fd, MCP_INSTALL_TARGET_USB);
+        ctx->storage_usb.available = (err_usb >= 0);
+
+        MCPError err_nand = MCP_InstallSetTarget(mcp_fd, MCP_INSTALL_TARGET_MLC);
+        ctx->storage_nand.available = (err_nand >= 0);
+
+        MCP_Close(mcp_fd);
+    } else {
+        ctx->storage_nand.available = true;
+    }
+
+    /* Query volume stats if mounted */
+    if (statvfs("fs:/vol/storage_mlc01", &st) == 0 && st.f_blocks > 0) {
+        uint64_t bsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+        ctx->storage_nand.total_bytes = (uint64_t)st.f_blocks * bsize;
+        ctx->storage_nand.free_bytes = (uint64_t)st.f_bavail * bsize;
+    }
+    if (ctx->storage_usb.available && statvfs("fs:/vol/storage_usb01", &st) == 0 && st.f_blocks > 0) {
+        uint64_t bsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+        ctx->storage_usb.total_bytes = (uint64_t)st.f_blocks * bsize;
+        ctx->storage_usb.free_bytes = (uint64_t)st.f_bavail * bsize;
+    }
+}
+
+static bool validate_target_space(AppContext *ctx) {
+    TitleMetadata *title = &ctx->titles[ctx->dl_title_index];
+    uint64_t req = title->total_size_bytes;
+    char req_str[32], free_str[32];
+    format_bytes(req, req_str, sizeof(req_str));
+
+    /* Staging to SD is always required */
+    if (ctx->storage_sd.available && ctx->storage_sd.free_bytes > 0 && ctx->storage_sd.free_bytes < req) {
+        format_bytes(ctx->storage_sd.free_bytes, free_str, sizeof(free_str));
+        snprintf(ctx->modal_error, sizeof(ctx->modal_error), "SD full: need %s, have %s free", req_str, free_str);
+        return false;
+    }
+
+    if (ctx->target_option == INSTALL_TARGET_USB) {
+        if (!ctx->storage_usb.available) {
+            snprintf(ctx->modal_error, sizeof(ctx->modal_error), "USB drive not detected or unformatted!");
+            return false;
+        }
+        if (ctx->storage_usb.free_bytes > 0 && ctx->storage_usb.free_bytes < req) {
+            format_bytes(ctx->storage_usb.free_bytes, free_str, sizeof(free_str));
+            snprintf(ctx->modal_error, sizeof(ctx->modal_error), "USB full: need %s, have %s free", req_str, free_str);
+            return false;
+        }
+    } else if (ctx->target_option == INSTALL_TARGET_NAND) {
+        if (!ctx->storage_nand.available) {
+            snprintf(ctx->modal_error, sizeof(ctx->modal_error), "System Memory unavailable!");
+            return false;
+        }
+        if (ctx->storage_nand.free_bytes > 0 && ctx->storage_nand.free_bytes < req) {
+            format_bytes(ctx->storage_nand.free_bytes, free_str, sizeof(free_str));
+            snprintf(ctx->modal_error, sizeof(ctx->modal_error), "NAND full: need %s, have %s free", req_str, free_str);
+            return false;
+        }
+    }
+
+    return true;
+}
 static void begin_mcp_installation(AppContext *ctx) {
     int mcp_fd = MCP_Open();
     if (mcp_fd < 0) {
@@ -774,33 +889,39 @@ static void begin_mcp_installation(AppContext *ctx) {
     memset(&ctx->mcp_progress, 0, sizeof(ctx->mcp_progress));
     ctx->mcp_started_flag = false;
 
-    MCPError target_err = MCP_InstallSetTarget(mcp_fd, MCP_INSTALL_TARGET_USB);
+    MCPInstallTarget target = (ctx->target_option == INSTALL_TARGET_USB) ? MCP_INSTALL_TARGET_USB : MCP_INSTALL_TARGET_MLC;
+    const char *target_name = (ctx->target_option == INSTALL_TARGET_USB) ? "USB" : "NAND";
+    MCPError target_err = MCP_InstallSetTarget(mcp_fd, target);
+
     if (target_err < 0) {
         snprintf(
             ctx->status_message,
             sizeof(ctx->status_message),
-            "MCP_InstallSetTarget(USB) failed (0x%08X)",
+            "MCP_InstallSetTarget failed (0x%08X)",
             (unsigned int)target_err
         );
         MCP_Close(mcp_fd);
         ctx->mcp_fd = -1;
-        remove_directory_recursive(ctx->dl_stage_dir);
         ctx->state = APP_STATE_ERROR;
         return;
     }
 
-    MCPError install_err = MCP_InstallTitleAsync(mcp_fd, ctx->dl_stage_dir);
+    /* Translate devoptab fs:/vol/external01 path to native IOSU /vol/storage_sdcard path */
+    char iosu_install_path[256];
+    TitleMetadata *title = &ctx->titles[ctx->dl_title_index];
+    snprintf(iosu_install_path, sizeof(iosu_install_path), "/vol/storage_sdcard/install/%s", title->title_id);
+
+    MCPError install_err = MCP_InstallTitleAsync(mcp_fd, iosu_install_path);
     if (install_err < 0) {
         snprintf(
             ctx->status_message,
             sizeof(ctx->status_message),
             "MCP_InstallTitleAsync failed (0x%08X) for %s",
             (unsigned int)install_err,
-            ctx->dl_stage_dir
+            iosu_install_path
         );
         MCP_Close(mcp_fd);
         ctx->mcp_fd = -1;
-        remove_directory_recursive(ctx->dl_stage_dir);
         ctx->state = APP_STATE_ERROR;
         return;
     }
@@ -809,8 +930,9 @@ static void begin_mcp_installation(AppContext *ctx) {
     snprintf(
         ctx->status_message,
         sizeof(ctx->status_message),
-        "Installing %s to USB via MCP...",
-        ctx->titles[ctx->dl_title_index].name
+        "Installing %s to %s via MCP...",
+        title->name,
+        target_name
     );
 }
 
@@ -823,41 +945,66 @@ static void step_mcp_installation(AppContext *ctx) {
     memset(&progress, 0, sizeof(progress));
 
     MCPError err = MCP_InstallGetProgress(ctx->mcp_fd, &progress);
-    if (err >= 0) {
-        ctx->mcp_progress = progress;
-        if (progress.inProgress == 1) {
-            ctx->mcp_started_flag = true;
-            char done_str[32], total_str[32];
-            format_bytes(progress.sizeProgress, done_str, sizeof(done_str));
-            format_bytes(progress.sizeTotal, total_str, sizeof(total_str));
+    if (err < 0) {
+        MCP_Close(ctx->mcp_fd);
+        ctx->mcp_fd = -1;
+        snprintf(
+            ctx->status_message,
+            sizeof(ctx->status_message),
+            "MCP Install Failed: Error 0x%08X (Check Sigpatches/Space)",
+            (unsigned int)err
+        );
+        ctx->state = APP_STATE_ERROR;
+        return;
+    }
+
+    ctx->mcp_progress = progress;
+
+    if (progress.inProgress == 1) {
+        ctx->mcp_started_flag = true;
+        char done_str[32], total_str[32];
+        format_bytes(progress.sizeProgress, done_str, sizeof(done_str));
+        format_bytes(progress.sizeTotal, total_str, sizeof(total_str));
+        snprintf(
+            ctx->status_message,
+            sizeof(ctx->status_message),
+            "Installing: content %u/%u (%s / %s)",
+            progress.contentsProgress,
+            progress.contentsTotal,
+            done_str,
+            total_str
+        );
+        return;
+    }
+
+    /* Finished: inProgress returned to 0 after having started */
+    if (ctx->mcp_started_flag || (progress.sizeTotal > 0 && progress.sizeProgress >= progress.sizeTotal)) {
+        MCP_Close(ctx->mcp_fd);
+        ctx->mcp_fd = -1;
+
+        /* Verify progress reached sizeTotal */
+        if (progress.sizeTotal > 0 && progress.sizeProgress < progress.sizeTotal) {
             snprintf(
                 ctx->status_message,
                 sizeof(ctx->status_message),
-                "Installing to USB: content %u/%u (%s / %s)",
-                progress.contentsProgress,
-                progress.contentsTotal,
-                done_str,
-                total_str
+                "MCP Install Aborted (%llu / %llu bytes)",
+                (unsigned long long)progress.sizeProgress,
+                (unsigned long long)progress.sizeTotal
             );
+            ctx->state = APP_STATE_ERROR;
             return;
         }
 
-        /* When inProgress transitions to 0 (or sizeTotal > 0 and sizeProgress >= sizeTotal), install is complete */
-        if (ctx->mcp_started_flag || (progress.sizeTotal > 0 && progress.sizeProgress >= progress.sizeTotal)) {
-            MCP_Close(ctx->mcp_fd);
-            ctx->mcp_fd = -1;
+        /* Clean up staged SD directory on success */
+        remove_directory_recursive(ctx->dl_stage_dir);
 
-            /* Clean up staged SD directory */
-            remove_directory_recursive(ctx->dl_stage_dir);
-
-            ctx->state = APP_STATE_COMPLETED;
-            snprintf(
-                ctx->status_message,
-                sizeof(ctx->status_message),
-                "Installed '%s' to USB! Staged SD files cleaned up.",
-                ctx->titles[ctx->dl_title_index].name
-            );
-        }
+        ctx->state = APP_STATE_COMPLETED;
+        snprintf(
+            ctx->status_message,
+            sizeof(ctx->status_message),
+            "Installed '%s'! Staged SD files cleaned up.",
+            ctx->titles[ctx->dl_title_index].name
+        );
     }
 }
 
@@ -867,10 +1014,16 @@ static void step_download_pipeline(AppContext *ctx) {
     }
 
     int still_running = 0;
-    /* Perform non-blocking network I/O bursts for this frame */
-    for (int burst = 0; burst < 8; burst++) {
+    /* Actively drain network for up to 80ms per frame instead of yielding to VSync */
+    Uint32 start_ms = SDL_GetTicks();
+    while ((SDL_GetTicks() - start_ms) < 80) {
         CURLMcode mc = curl_multi_perform(ctx->curl_multi, &still_running);
         if (mc != CURLM_OK || still_running == 0) {
+            break;
+        }
+        int numfds = 0;
+        curl_multi_poll(ctx->curl_multi, NULL, 0, 10, &numfds);
+        if (numfds == 0) {
             break;
         }
     }
@@ -928,8 +1081,18 @@ static void step_download_pipeline(AppContext *ctx) {
             if (ctx->dl_file_index < title->file_count) {
                 start_next_file_download(ctx);
             } else {
-                /* All package files staged on SD; transition to async MCP USB installation */
-                begin_mcp_installation(ctx);
+                if (ctx->target_option == INSTALL_TARGET_SD) {
+                    ctx->state = APP_STATE_COMPLETED;
+                    snprintf(
+                        ctx->status_message,
+                        sizeof(ctx->status_message),
+                        "Downloaded '%s' to SD (install/%s)!",
+                        title->name,
+                        title->title_id
+                    );
+                } else {
+                    begin_mcp_installation(ctx);
+                }
             }
             break;
         }
@@ -1129,6 +1292,80 @@ static void render_text(
     SDL_FreeSurface(surf);
 }
 
+static void render_target_modal(AppContext *ctx) {
+    SDL_SetRenderDrawColor(ctx->renderer, 10, 15, 26, 210);
+    SDL_Rect screen_rect = { 0, 0, 1280, 720 };
+    SDL_RenderFillRect(ctx->renderer, &screen_rect);
+
+    int dw = 780, dh = 440;
+    int dx = (1280 - dw) / 2, dy = (720 - dh) / 2;
+    SDL_Rect modal_rect = { dx, dy, dw, dh };
+    SDL_SetRenderDrawColor(ctx->renderer, 24, 32, 47, 248);
+    SDL_RenderFillRect(ctx->renderer, &modal_rect);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 180, 216, 255);
+    SDL_RenderDrawRect(ctx->renderer, &modal_rect);
+
+    TitleMetadata *t = &ctx->titles[ctx->dl_title_index];
+    char size_str[32];
+    format_bytes(t->total_size_bytes, size_str, sizeof(size_str));
+
+    SDL_Color col_header = {0, 220, 255, 255};
+    SDL_Color col_white  = {255, 255, 255, 255};
+    SDL_Color col_sub    = {180, 195, 215, 255};
+    SDL_Color col_gray   = {148, 163, 184, 255};
+    SDL_Color col_err    = {248, 113, 113, 255};
+
+    char header_buf[128];
+    snprintf(header_buf, sizeof(header_buf), "Install Destination: %s", t->name);
+    render_text(ctx->renderer, ctx->font_body, header_buf, dx + 30, dy + 25, col_header, false);
+
+    char req_buf[64];
+    snprintf(req_buf, sizeof(req_buf), "Package Size: %s (%d files)", size_str, t->file_count);
+    render_text(ctx->renderer, ctx->font_small, req_buf, dx + 30, dy + 62, col_sub, false);
+
+    const char *names[3] = { "USB Storage", "NAND (System Memory)", "SD Card (Download Only)" };
+    StorageStats *stats[3] = { &ctx->storage_usb, &ctx->storage_nand, &ctx->storage_sd };
+
+    for (int i = 0; i < 3; i++) {
+        int ry = dy + 115 + (i * 75);
+        SDL_Rect row_rect = { dx + 30, ry, dw - 60, 60 };
+
+        if (i == (int)ctx->target_option) {
+            SDL_SetRenderDrawColor(ctx->renderer, 14, 116, 144, 200);
+            SDL_RenderFillRect(ctx->renderer, &row_rect);
+            SDL_SetRenderDrawColor(ctx->renderer, 56, 189, 248, 255);
+            SDL_RenderDrawRect(ctx->renderer, &row_rect);
+        } else {
+            SDL_SetRenderDrawColor(ctx->renderer, 30, 41, 59, 160);
+            SDL_RenderFillRect(ctx->renderer, &row_rect);
+            SDL_SetRenderDrawColor(ctx->renderer, 71, 85, 105, 255);
+            SDL_RenderDrawRect(ctx->renderer, &row_rect);
+        }
+
+        render_text(ctx->renderer, ctx->font_body, names[i], dx + 50, ry + 16, col_white, false);
+
+        char cap_buf[64];
+        if (!stats[i]->available) {
+            snprintf(cap_buf, sizeof(cap_buf), "[ Not Detected / Unformatted ]");
+        } else if (stats[i]->total_bytes > 0) {
+            char f_str[32], t_str[32];
+            format_bytes(stats[i]->free_bytes, f_str, sizeof(f_str));
+            format_bytes(stats[i]->total_bytes, t_str, sizeof(t_str));
+            snprintf(cap_buf, sizeof(cap_buf), "Free: %s / %s", f_str, t_str);
+        } else {
+            snprintf(cap_buf, sizeof(cap_buf), "[ Ready / Available ]");
+        }
+        render_text(ctx->renderer, ctx->font_small, cap_buf, dx + 380, ry + 18, col_gray, false);
+    }
+
+    if (ctx->modal_error[0] != 0) {
+        render_text(ctx->renderer, ctx->font_small, ctx->modal_error, dx + 30, dy + 355, col_err, false);
+    }
+
+    render_text(ctx->renderer, ctx->font_small, "D-Pad: Select   |   A: Confirm   |   B: Cancel", dx + 30, dy + 395, col_gray, false);
+}
+
+
 static void render_ui(AppContext *ctx) {
     SDL_Renderer *renderer = ctx->renderer;
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -1147,7 +1384,7 @@ static void render_ui(AppContext *ctx) {
         renderer,
         ctx->font_small,
         "Wii U LAN WUP Package Client  |  Aero Glass Edition",
-        245,
+        315,
         43,
         white_secondary,
         false
@@ -1253,18 +1490,12 @@ static void render_ui(AppContext *ctx) {
     int status_h = 82;
     draw_aero_glass_card(renderer, status_x, status_y, status_w, status_h, 14, 38, false);
 
-    render_text(renderer, ctx->font_small, ctx->status_message, status_x + 24, status_y + 14, white_primary, false);
-
-    const char *controls_hint = "D-Pad: Navigate   |   A: Download & Install   |   B: Cancel   |   HOME: Exit";
-    render_text(
-        renderer,
-        ctx->font_small,
-        controls_hint,
-        status_x + status_w - 24,
-        status_y + 14,
-        white_secondary,
-        true
-    );
+    if (ctx->state == APP_STATE_BROWSING && ctx->status_message[0] == '\0') {
+        const char *controls_hint = "D-Pad: Navigate   |   A: Download & Install   |   B: Cancel   |   HOME: Exit";
+        render_text(renderer, ctx->font_small, controls_hint, status_x + 24, status_y + 14, white_secondary, false);
+    } else {
+        render_text(renderer, ctx->font_small, ctx->status_message, status_x + 24, status_y + 14, cyan_accent, false);
+    }
 
     /* Progress bar track */
     int bar_x = status_x + 24;
@@ -1307,6 +1538,9 @@ static void render_ui(AppContext *ctx) {
         SDL_SetRenderDrawColor(renderer, 255, 255, 255, 130);
         SDL_RenderDrawLine(renderer, bar_x + 6, bar_y + 2, bar_x + fill_w - 6, bar_y + 2);
     }
+    if (ctx->state == APP_STATE_SELECT_TARGET) {
+        render_target_modal(ctx);
+    }
 
     SDL_RenderPresent(renderer);
 }
@@ -1334,13 +1568,13 @@ static void move_selection(AppContext *ctx, int delta) {
 }
 
 static bool handle_input(AppContext *ctx) {
-    bool nav_up      = false;
-    bool nav_down    = false;
-    bool press_a     = false;
-    bool press_b     = false;
-    bool press_home  = false;
+    bool nav_up = false;
+    bool nav_down = false;
+    bool press_a = false;
+    bool press_b = false;
+    bool press_home = false;
 
-    /* 1. Poll Wii U GamePad via VPADRead */
+    /* 1. Poll Wii U GamePad */
     VPADStatus vpad_data;
     VPADReadError vpad_err = VPAD_READ_UNINITIALIZED;
     VPADRead(VPAD_CHAN_0, &vpad_data, 1, &vpad_err);
@@ -1361,12 +1595,12 @@ static bool handle_input(AppContext *ctx) {
         }
         if (ev.type == SDL_KEYDOWN) {
             switch (ev.key.keysym.sym) {
-                case SDLK_UP:     nav_up = true; break;
-                case SDLK_DOWN:   nav_down = true; break;
-                case SDLK_RETURN: press_a = true; break;
+                case SDLK_UP:        nav_up = true; break;
+                case SDLK_DOWN:      nav_down = true; break;
+                case SDLK_RETURN:    press_a = true; break;
                 case SDLK_ESCAPE:
                 case SDLK_BACKSPACE: press_b = true; break;
-                case SDLK_HOME:   press_home = true; break;
+                case SDLK_HOME:      press_home = true; break;
                 default: break;
             }
         } else if (ev.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -1390,7 +1624,24 @@ static bool handle_input(AppContext *ctx) {
         return false;
     }
 
-    if (ctx->state == APP_STATE_BROWSING || ctx->state == APP_STATE_COMPLETED || ctx->state == APP_STATE_ERROR) {
+    if (ctx->state == APP_STATE_SELECT_TARGET) {
+        if (nav_up) {
+            if (ctx->target_option > 0) ctx->target_option--;
+            else ctx->target_option = INSTALL_TARGET_COUNT - 1;
+            ctx->modal_error[0] = 0;
+        } else if (nav_down) {
+            if (ctx->target_option + 1 < INSTALL_TARGET_COUNT) ctx->target_option++;
+            else ctx->target_option = 0;
+            ctx->modal_error[0] = 0;
+        } else if (press_b) {
+            ctx->state = APP_STATE_BROWSING;
+            ctx->modal_error[0] = 0;
+        } else if (press_a) {
+            if (validate_target_space(ctx)) {
+                begin_title_download(ctx, ctx->dl_title_index);
+            }
+        }
+    } else if (ctx->state == APP_STATE_BROWSING || ctx->state == APP_STATE_COMPLETED || ctx->state == APP_STATE_ERROR) {
         if (nav_up) {
             move_selection(ctx, -1);
         } else if (nav_down) {
@@ -1399,7 +1650,11 @@ static bool handle_input(AppContext *ctx) {
             if (ctx->title_count == 0) {
                 fetch_titles_catalog(ctx);
             } else {
-                begin_title_download(ctx, ctx->selected_index);
+                ctx->dl_title_index = ctx->selected_index;
+                refresh_storage_stats(ctx);
+                ctx->target_option = ctx->storage_usb.available ? INSTALL_TARGET_USB : INSTALL_TARGET_NAND;
+                ctx->modal_error[0] = 0;
+                ctx->state = APP_STATE_SELECT_TARGET;
             }
         }
     } else if (ctx->state == APP_STATE_DOWNLOADING) {
