@@ -64,15 +64,7 @@ static inline MCPError LocaLeShop_MCP_InstallSetTarget(int mcp_fd, int target) {
 static inline MCPError LocaLeShop_MCP_InstallTitleAsync(int mcp_fd, const char *path) {
     static MCPInstallTitleInfo s_installInfo;
     memset(&s_installInfo, 0, sizeof(s_installInfo));
-
-    char mcp_path[512];
-    if (strncmp(path, "fs:/vol/external01", 18) == 0) {
-        snprintf(mcp_path, sizeof(mcp_path), "/vol/storage_sdcard%s", path + 18);
-    } else {
-        snprintf(mcp_path, sizeof(mcp_path), "%s", path);
-    }
-
-    return MCP_InstallTitleAsync(mcp_fd, mcp_path, &s_installInfo);
+    return MCP_InstallTitleAsync(mcp_fd, path, &s_installInfo);
 }
 
 #define MCP_InstallSetTarget(fd, target) LocaLeShop_MCP_InstallSetTarget((fd), (target))
@@ -951,7 +943,7 @@ static void step_mcp_installation(AppContext *ctx) {
         snprintf(
             ctx->status_message,
             sizeof(ctx->status_message),
-            "MCP Install Failed: Error 0x%08X (Check Sigpatches/Space)",
+            "MCP Install Error: 0x%08X (Check Sigpatches/Space)",
             (unsigned int)err
         );
         ctx->state = APP_STATE_ERROR;
@@ -977,17 +969,17 @@ static void step_mcp_installation(AppContext *ctx) {
         return;
     }
 
-    /* Finished: inProgress returned to 0 after having started */
-    if (ctx->mcp_started_flag || (progress.sizeTotal > 0 && progress.sizeProgress >= progress.sizeTotal)) {
+    /* If installation stopped after starting, verify actual completion */
+    if (ctx->mcp_started_flag) {
         MCP_Close(ctx->mcp_fd);
         ctx->mcp_fd = -1;
 
-        /* Verify progress reached sizeTotal */
-        if (progress.sizeTotal > 0 && progress.sizeProgress < progress.sizeTotal) {
+        /* Total size must be non-zero and transferred bytes must match total */
+        if (progress.sizeTotal == 0 || progress.sizeProgress < progress.sizeTotal) {
             snprintf(
                 ctx->status_message,
                 sizeof(ctx->status_message),
-                "MCP Install Aborted (%llu / %llu bytes)",
+                "MCP Aborted: transferred %llu / %llu bytes",
                 (unsigned long long)progress.sizeProgress,
                 (unsigned long long)progress.sizeTotal
             );
@@ -995,7 +987,7 @@ static void step_mcp_installation(AppContext *ctx) {
             return;
         }
 
-        /* Clean up staged SD directory on success */
+        /* Only prune staged files on verified completion */
         remove_directory_recursive(ctx->dl_stage_dir);
 
         ctx->state = APP_STATE_COMPLETED;

@@ -13,3 +13,14 @@ out
 src/gtitles.c
 version.txt
 client/build/
+
+# Python & Virtual Environments
+.venv/
+__pycache__/
+*.pyc
+
+# Client Build Artifacts & Binaries
+client/build/
+*.wuhb
+*.rpx
+*.elf
