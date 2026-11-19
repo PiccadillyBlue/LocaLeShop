@@ -24,3 +24,6 @@ client/build/
 *.wuhb
 *.rpx
 *.elf
+start_server.bat
+start_server.sh
+server/localeshop_server.log

@@ -19,7 +19,18 @@
 
 ## Quick Start
 
-### 1. Running the Server
+### Automated Setup Wizard (Windows, macOS, Linux)
+
+If you do not want to manually configure the server or compile the client yourself, run the interactive terminal setup wizard. It asks where your Wii U game files are located and where your Wii U is (either its LAN IP address via Aroma `ftpiiu` or an SD card plugged into your computer), installs the server dependencies, starts the background server, and deploys `LocaLeShop.wuhb` + `config.json` to your console:
+
+- **Windows:** Double-click `setup.bat` or run `python setup.py`
+- **macOS & Linux:** Run `./setup.sh` or `python3 setup.py`
+
+---
+
+### Manual Setup
+
+#### 1. Running the Server
 
 ```bash
 cd server
