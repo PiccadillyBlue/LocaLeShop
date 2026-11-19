@@ -89,7 +89,7 @@ static inline MCPError LocaLeShop_MCP_InstallTitleAsync(int mcp_fd, const char *
 #define SCREEN_WIDTH           1280
 #define SCREEN_HEIGHT          720
 
-#define DEFAULT_SERVER_IP      "10.0.0.99"
+#define DEFAULT_SERVER_IP      "192.168.1.100"
 #define DEFAULT_SERVER_PORT    8000
 #define CONFIG_DIR_PATH        "/vol/external01/wiiu/apps/LocaLeShop"
 #define CONFIG_FILE_PATH       "/vol/external01/wiiu/apps/LocaLeShop/config.json"
