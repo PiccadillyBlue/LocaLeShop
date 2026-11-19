@@ -1,39 +1,40 @@
-# My contributions to this forked software are 100% cuck-coded, and thus will never reach a full 1.0 release because I have no idea how to code. You may treat this fork as a base from which a real coder can come in and refine this functionality.
-So just, y'know...keep that in mind. I'm not gonna sit here and lie to you like I'm some big-shot software engineer.
-
-#LocaLeShop
-Yeah so basically the idea is that you can host your own extracted WUXes on your server and have your Wii U console directly pull from there so you don't have to deal with file management yourself, it just works like an eShop.
-
 # LocaLeShop Server Daemon
 
-A lightweight, self-hosted Python 3 LAN server daemon for **LocaLeShop** that indexes extracted Wii U WUP packages (`.app`, `.h3`, `title.tmd`, `title.tik`, `title.cert`) and streams them over HTTP (with RFC 9110 `200 OK` / `206 Partial Content` byte-range support) to a paired Wii U homebrew client (`.wuhb`).
+A lightweight, self-hosted Python 3 LAN server daemon for **LocaLeShop** that indexes Wii U titles in **`.wux`** (compressed Wii U Disc image + `.key`), **`.wud`** (raw or split `wudump` disc image + `.key`), and **extracted WUP package folders** (`.app`, `.h3`, `title.tmd`, `title.tik`, `title.cert`), streaming installable WUP files directly over HTTP (`200 OK` / `206 Partial Content` byte-range support) to a paired Wii U homebrew client (`.wuhb`).
 
 ## Features
 
-- **Binary TMD Parser**: Reads big-endian Wii U `title.tmd` headers directly:
-  - `Title ID` at offset `0x18C` (`8` bytes, formatted as a 16-character lowercase hex string)
-  - `Title Version` at offset `0x1DC` (`2` bytes, unsigned short `>H`)
-  - `Content Count` at offset `0x1DE` (`2` bytes, unsigned short `>H`)
-- **Automatic Library Scanner**: Recursively scans a staging directory (default `./library`) for folders containing `title.tmd`, computes total package byte size, and indexes all relative file paths. Optionally resolves human-readable game titles from a `keys.txt` database if present.
-- **Chunked Byte-Range Streaming (`200` / `206`)**: Streams `.app`, `.h3`, `.tmd`, `.tik`, and `.cert` files in configurable chunks with `Accept-Ranges: bytes`, `Content-Range`, and `Content-Length` headers, plus path-traversal protection and case-insensitive filename fallback for FAT32/WUP compatibility.
+- **Zero-Extraction On-the-Fly `.wux` & `.wud` Streaming**:
+  - Parses compressed `WUX0` sector lookup tables directly in memory.
+  - Decrypts the disc partition table (`0x18000`) and `SI` partition using the companion `.key` file (supports both raw 16-byte binary `.key` files and 32-character hex text `.key` files).
+  - Extracts `title.tmd`, `title.tik`, and `title.cert` into memory and maps every `.app` and `.h3` content file inside the `GM<title_id>` partition so the Wii U can stream and install `.wux` titles directly to a Home Screen tile without needing 23 GB of temporary server extraction space.
+- **Automatic Fake Ticket & Certificate Synthesis**:
+  - If an extracted WUP folder is missing `title.tik` or `title.cert`, automatically synthesizes a valid ticket and certificate chain so `MCP_InstallTitleAsync` can install it cleanly.
+- **Rich Metadata via `WiiU-Titles-Library.csv`**:
+  - Resolves human-readable title names, regions (`USA`, `EUR`, `JPN`, `ALL`), categories (`Game`, `Update`, `DLC`, `Demo`, `System`), and product codes automatically.
+- **Official Nintendo NUS CDN Endpoint Compatibility (`/ccs/download/...`)**:
+  - In addition to `/api/v1/titles`, exposes `/ccs/download/{title_id}/tmd`, `/ccs/download/{title_id}/cetk`, and `/ccs/download/{title_id}/{cid}` for native `nn::nim` / NUS compatibility.
+- **UDP LAN Auto-Discovery**:
+  - Listens for UDP broadcast probes (`LOCALESHOP_DISCOVER_V1`) on the server port so the Wii U client can find the server on your local network automatically.
 
 ## Directory Layout
 
-Place extracted WUP packages inside your library folder so each package folder contains a `title.tmd`:
+Place `.wux` + `.key` folders, `.wud` + `.key` folders, or extracted WUP folders inside your library directory:
 
 ```text
 library/
-├── The Legend of Zelda Breath of the Wild [00050000101c9400]/
-│   ├── title.tmd
-│   ├── title.tik
-│   ├── title.cert
-│   ├── 00000000.app
-│   └── 00000000.h3
-└── Mario Kart 8 USA/
+├── The Legend of Zelda Breath of the Wild/
+│   ├── botw.wux
+│   └── botw.key
+├── Mario Kart 8/
+│   ├── mk8.wud
+│   └── game.key
+└── Super Mario 3D World [0005000010145c00]/
     ├── title.tmd
     ├── title.tik
     ├── title.cert
-    └── 00000000.app
+    ├── 00000000.app
+    └── 00000000.h3
 ```
 
 ## Installation
@@ -47,66 +48,23 @@ pip install -r requirements.txt
 
 ## Running the Server
 
-### Using the CLI
-
 ```bash
 python3 server.py --library ./library --host 0.0.0.0 --port 8080
 ```
 
-Optional flags and environment variables:
-
 | CLI Flag | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--library`, `-l` | `LOCALESHOP_LIBRARY_DIR` | `./library` | Root folder containing staged WUP title directories |
-| `--keys`, `-k` | `LOCALESHOP_KEYS_FILE` | `./keys.txt` | Optional `keys.txt` file to resolve Title IDs to human-readable game names |
+| `--library`, `-l` | `LOCALESHOP_LIBRARY_DIR` | `./library` | Root folder containing `.wux`, `.wud`, or extracted WUP title directories |
+| `--csv`, `-c` | `LOCALESHOP_CSV_FILE` | `./WiiU-Titles-Library.csv` | Title metadata CSV database |
+| `--keys`, `-k` | `LOCALESHOP_KEYS_FILE` | `./keys.txt` | Optional `keys.txt` file for additional title keys and aliases |
 | `--host`, `-H` | `LOCALESHOP_HOST` | `0.0.0.0` | Network interface to bind |
-| `--port`, `-p` | `LOCALESHOP_PORT` | `8080` | TCP port to listen on |
+| `--port`, `-p` | `LOCALESHOP_PORT` | `8080` | TCP & UDP port to listen on |
 | `--chunk-size` | `LOCALESHOP_CHUNK_SIZE` | `65536` | Streaming chunk size in bytes (`64 KiB`) |
-
-### Using Uvicorn Directly
-
-```bash
-LOCALESHOP_LIBRARY_DIR=./library uvicorn server:app --host 0.0.0.0 --port 8080
-```
 
 ## API Reference
 
-### 1. List Indexed Titles
-
-- **Endpoint**: `GET /api/v1/titles`
-- **Response (`200 OK`)**:
-
-```json
-[
-  {
-    "title_id": "00050000101c9400",
-    "name": "The Legend of Zelda Breath of the Wild",
-    "version": 208,
-    "content_count": 29,
-    "total_size_bytes": 2147485920,
-    "file_list": [
-      "00000000.app",
-      "00000000.h3",
-      "title.cert",
-      "title.tik",
-      "title.tmd"
-    ]
-  }
-]
-```
-
-### 2. Stream Package File (Full or Byte Range)
-
-- **Endpoint**: `GET /api/v1/titles/{title_id}/files/{filename}`
-- **Full Download**:
-
-```bash
-curl -O http://localhost:8080/api/v1/titles/00050000101c9400/files/title.tmd
-```
-
-- **Partial Chunk Request (`206 Partial Content`)**:
-
-```bash
-curl -i -H "Range: bytes=0-1023" \
-  http://localhost:8080/api/v1/titles/00050000101c9400/files/00000000.app
-```
+- `GET /api/v1/titles` — Returns JSON array of all indexed `.wux`, `.wud`, and `.wup` titles.
+- `GET /api/v1/status` — Health check and indexed title count.
+- `POST /api/v1/rescan` — Rescans the library directory.
+- `GET /api/v1/titles/{title_id}/files/{filename}` — Streams any package file (`200 OK` or `206 Partial Content`).
+- `GET /ccs/download/{title_id}/{tmd|cetk|<cid>}` — Official Nintendo Update Server (NUS) CDN compatible endpoints.
