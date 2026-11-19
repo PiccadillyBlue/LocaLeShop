@@ -584,7 +584,7 @@ def main() -> None:
     if is_local:
         server_ip = ask("Confirm this computer's LAN IP address for your Wii U", default=detected_ip)
     else:
-        server_ip = ask("Enter the LAN IP address of your LocaLeShop server", default="10.0.0.99")
+        server_ip = ask("Enter the LAN IP address of your LocaLeShop server")
 
     port_str = ask("Enter LocaLeShop server port", default="8000")
     try:
@@ -639,7 +639,7 @@ def main() -> None:
     sd_card_path: Optional[Path] = None
 
     if deploy_choice == "1":
-        wiiu_ip = ask("Enter your Wii U console's IP address", default="10.0.0.218")
+        wiiu_ip = ask("Enter your Wii U console's IP address")
         ftp_port_str = ask("Enter your Wii U FTP port", default="21")
         try:
             wiiu_ftp_port = int(ftp_port_str)
