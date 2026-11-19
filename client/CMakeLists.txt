@@ -1,27 +1,51 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(LocaLeShopClient VERSION 1.0.0 LANGUAGES C)
+# Ensure DEVKITPRO and WUT_ROOT are resolved before project() when using wut toolchain
+if(NOT DEFINED ENV{DEVKITPRO})
+    message(FATAL_ERROR "Please set DEVKITPRO in your environment (export DEVKITPRO=/opt/devkitpro)")
+endif()
+
+set(DEVKITPRO $ENV{DEVKITPRO})
+
+# Load the official Wii U Toolchain (wut) CMake file if not already specified via -DCMAKE_TOOLCHAIN_FILE
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if(EXISTS "${DEVKITPRO}/wut/share/wut.toolchain.cmake")
+        set(CMAKE_TOOLCHAIN_FILE "${DEVKITPRO}/wut/share/wut.toolchain.cmake" CACHE FILEPATH "WUT toolchain file")
+    endif()
+endif()
+
+project(LocaLeShopClient VERSION 1.1.0 LANGUAGES C)
+
+if(NOT COMMAND wut_create_rpx)
+    include("${DEVKITPRO}/wut/share/wut.cmake" OPTIONAL)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Include devkitPro portlibs (wiiu + ppc) and wut/usr (libmocha) search paths
+set(PORTLIBS_PPC "${DEVKITPRO}/portlibs/ppc")
+set(PORTLIBS_WIIU "${DEVKITPRO}/portlibs/wiiu")
+
+include_directories(
+    "${PORTLIBS_WIIU}/include"
+    "${PORTLIBS_WIIU}/include/SDL2"
+    "${PORTLIBS_PPC}/include"
+    "${PORTLIBS_PPC}/include/SDL2"
+    "${PORTLIBS_PPC}/include/freetype2"
+    "${DEVKITPRO}/wut/usr/include"
+    "${DEVKITPRO}/wut/include"
+)
+
+link_directories(
+    "${PORTLIBS_WIIU}/lib"
+    "${PORTLIBS_PPC}/lib"
+    "${DEVKITPRO}/wut/usr/lib"
+    "${DEVKITPRO}/wut/lib"
+)
+
 add_executable(LocaLeShop
     src/main.c
-    src/cJSON.c
-)
-
-target_include_directories(LocaLeShop PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    $ENV{DEVKITPRO}/wut/include
-    $ENV{DEVKITPRO}/portlibs/wiiu/include
-    $ENV{DEVKITPRO}/portlibs/ppc/include
-    $ENV{DEVKITPRO}/portlibs/ppc/include/SDL2
-)
-
-target_link_directories(LocaLeShop PRIVATE
-    $ENV{DEVKITPRO}/portlibs/wiiu/lib
-    $ENV{DEVKITPRO}/portlibs/ppc/lib
-    $ENV{DEVKITPRO}/wut/lib
 )
 
 target_compile_options(LocaLeShop PRIVATE
@@ -30,32 +54,34 @@ target_compile_options(LocaLeShop PRIVATE
     -O2
     -ffunction-sections
     -fdata-sections
+    -D__WIIU__
+    -D__WUT__
 )
 
-# Static link order:
-# 1. UI / Font rendering (SDL2_ttf, SDL2, freetype, harfbuzz, png16)
-# 2. Network client (curl)
-# 3. Compression & decoding (brotlidec, brotlicommon, bz2, z)
-# 4. Cryptography (mbedtls, mbedx509, mbedcrypto)
-# 5. Core Wii U runtime & math (wut, m)
+# Static PowerPC link order for SDL2_ttf (freetype <-> harfbuzz circular dep),
+# brotli, png16, jansson, curl, mbedtls, zlib, mocha, and wut.
 target_link_libraries(LocaLeShop PRIVATE
     SDL2_ttf
     SDL2
     freetype
     harfbuzz
+    freetype
     png16
-    curl
+    bz2
     brotlidec
     brotlicommon
-    bz2
-    z
+    jansson
+    curl
     mbedtls
     mbedx509
     mbedcrypto
+    z
+    mocha
     wut
     m
 )
 
+# Build the final .rpx executable and package the .wuhb bundle for Aroma / Tiramisu
 wut_create_rpx(LocaLeShop)
 
 set(WUHB_ARGS
@@ -66,6 +92,8 @@ set(WUHB_ARGS
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/content")
     list(APPEND WUHB_ARGS CONTENT "${CMAKE_CURRENT_SOURCE_DIR}/assets/content")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+    list(APPEND WUHB_ARGS CONTENT "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png")
     list(APPEND WUHB_ARGS ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png")
